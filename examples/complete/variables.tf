@@ -1,57 +1,37 @@
-
 variable "project_name" {
+  description = "Name of the project."
   type        = string
-  description = "Project name."
-  default     = "example"
+  default     = "myapp"
 }
 
 variable "environment" {
-  type        = string
   description = "Deployment environment."
-  default     = "development"
+  type        = string
+  default     = "production"
 }
 
 variable "service_name" {
+  description = "Logical name of the service this Auto Scaling Group belongs to."
   type        = string
-  description = "Service or worker fleet name."
-  default     = "application"
+  default     = "worker"
 }
 
-variable "vpc_id" {
+variable "launch_template_id" {
+  description = "ID of the launch template to use. In a real setup, this is typically the id output of a launch-template module."
   type        = string
-  description = "Existing VPC ID."
 }
 
-variable "security_group_id" {
+variable "launch_template_version" {
+  description = "Launch template version to use. In a real setup, this is typically the latest_version output of a launch-template module."
   type        = string
-  description = "Existing security group ID."
 }
 
 variable "subnet_ids" {
+  description = "Subnet IDs where instances are launched."
   type        = list(string)
-  description = "Private subnet IDs for the Auto Scaling Group."
 }
 
-variable "instance_type" {
+variable "target_group_arn" {
+  description = "ALB target group ARN this Auto Scaling Group registers instances with."
   type        = string
-  description = "EC2 instance type."
-  default     = "t3.micro"
-}
-
-variable "min_size" {
-  type        = number
-  description = "Minimum ASG capacity."
-  default     = 1
-}
-
-variable "desired_size" {
-  type        = number
-  description = "Desired ASG capacity."
-  default     = 1
-}
-
-variable "max_size" {
-  type        = number
-  description = "Maximum ASG capacity."
-  default     = 2
 }

@@ -1,207 +1,270 @@
+# Terraform AWS Auto Scaling Group
 
-# Terraform AWS Auto Scaling Module
+Reusable Terraform module for an AWS Auto Scaling Group, supporting both a single-instance-type launch mode and a mixed-instances mode (multiple instance types, On-Demand/Spot mixing) behind one toggle -- along with the current, non-legacy configurable surface of `aws_autoscaling_group`: termination policies, suspended processes, warm pools, lifecycle hooks, capacity reservations, Availability Zone distribution strategy, and a fully expanded instance refresh configuration.
 
-A reusable Terraform module for deploying a generic Ubuntu-based Amazon EC2
-Auto Scaling Group using an EC2 Launch Template.
+This module supersedes what were previously two separate repos (`terraform-aws-autoscaling` and `terraform-aws-autoscaling-mixed`). The two shared roughly 90% of their Auto Scaling Group configuration and differed only in how instance types are selected -- that shared surface now lives in one place instead of two.
 
-The module is designed to provide a consistent foundation for application,
-worker, backend, and other EC2-based workloads without embedding
-application-specific configuration.
+This module does not create a launch template, an AMI, or an IAM role/instance profile. All three have independent lifecycles and are supplied by dedicated modules instead.
 
-## Features
+---
 
-- Ubuntu 24.04 LTS x86_64 AMI discovery
-- EC2 Launch Template
-- On-Demand EC2 Auto Scaling Group
-- Multi-AZ subnet support
-- Security group integration
-- Optional Application Load Balancer or Network Load Balancer target groups
-- Optional AWS Systems Manager access
-- Optional Amazon ECR read access
-- Additional IAM policy support
-- IMDSv2 enforcement
-- Encrypted root EBS volume
-- Configurable instance type
-- Configurable capacity
-- Optional detailed monitoring
-- Generic user-data support
-- Consistent resource tagging
+# Architecture
 
-## Architecture
+```text
+Launch-template module
+        |
+        v
+launch_template_id / launch_template_version
+        |
+        v
+        +-----------------------------+
+        |     Auto Scaling Group      |
+        |                              |
+        |  mixed_instances_enabled?    |
+        |    true  -> mixed_instances_policy  |
+        |    false -> launch_template block    |
+        +-----------------------------+
+```
 
-The module creates:
+---
 
-1. IAM role
-2. IAM policy attachments
-3. IAM instance profile
-4. EC2 Launch Template
-5. Auto Scaling Group
+# Design Principles
 
-The module dynamically resolves the latest Ubuntu 24.04 LTS AMI published by
-Canonical in the AWS region configured by the consuming Terraform project.
+* One module, one toggle (`mixed_instances_enabled`), instead of two modules maintaining the same ~90% of shared Auto Scaling Group configuration in parallel.
+* The launch template is always caller-supplied (`launch_template_id` / `launch_template_version`), never created here -- see the companion `terraform-aws-launch-template` module.
+* Deliberately excluded: `load_balancers` (classic ELB, legacy -- `target_group_arns` and `traffic_source` cover current load balancer types) and `launch_configuration` (deprecated by AWS in favor of launch templates).
 
-## Usage
+---
+
+# Requirements
+
+| Name         | Version              |
+| ------------ | ---------------------- |
+| Terraform    | `>= 1.6.0`             |
+| AWS provider | `>= 6.0.0, < 7.0.0`    |
+
+---
+
+# Usage
+
+## Mixed instances (default)
 
 ```hcl
-module "application_autoscaling" {
-  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v1.0.0"
+module "launch_template" {
+  source = "git::https://github.com/iamwonodi/terraform-aws-launch-template.git?ref=v1.0.0"
 
-  project_name = var.project_name
-  environment  = local.environment
-  service_name = "application"
+  project_name = "myapp"
+  environment  = "production"
+  service_name = "worker"
 
-  app_security_group_id = module.private_sg.security_group_id
-  subnet_ids            = module.vpc_base.private_subnet_ids
+  ami_id                     = module.ubuntu_ami.ami_id
+  iam_instance_profile_name = module.profile.instance_profile_name
+  security_group_ids         = [module.worker_sg.security_group_id]
 
-  instance_type = "t3.medium"
-
-  min_size     = 2
-  desired_size = 4
-  max_size     = 6
-
-  enable_ssm_access      = true
-  enable_ecr_read_access = true
-
-  user_data = local.user_data
+  # instance_type left null: instance selection happens through
+  # mixed_instances_policy below instead.
 }
-````
 
-## Application Initialization
+module "autoscaling" {
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v2.0.0"
 
-The module does not contain application-specific startup logic.
+  project_name = "myapp"
+  environment  = "production"
+  service_name = "worker"
 
-Consumers can provide their own user-data script through:
+  launch_template_id      = module.launch_template.id
+  launch_template_version = module.launch_template.latest_version
 
-```hcl
-user_data = local.user_data
+  subnet_ids = module.vpc.private_subnet_ids
+
+  instance_types = ["t3.small", "t3.medium", "t3a.small"]
+
+  target_group_arns = [module.alb_rule.target_group_arn]
+}
 ```
 
-This keeps infrastructure provisioning separate from application deployment.
-
-For example, Core Infrastructure can provide a generic EC2 bootstrap script
-that installs Docker, AWS CLI, application deployment tooling, and other
-required host dependencies.
-
-## Target Groups
-
-Target groups are optional.
-
-For a workload behind an Application Load Balancer or Network Load Balancer:
+## Single instance type
 
 ```hcl
-target_group_arns = [
-  module.application_target_group.target_group_arn
+module "launch_template" {
+  source = "git::https://github.com/iamwonodi/terraform-aws-launch-template.git?ref=v1.0.0"
+
+  # ...
+  instance_type = "t3.medium"  # required in this mode
+}
+
+module "autoscaling" {
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v2.0.0"
+
+  # ...
+  mixed_instances_enabled = false
+
+  launch_template_id      = module.launch_template.id
+  launch_template_version = module.launch_template.latest_version
+}
+```
+
+See `examples/complete` for a fuller mixed-instances example.
+
+---
+
+# Launch Mode
+
+`mixed_instances_enabled` (default `true`) is the one toggle governing which AWS block this module emits:
+
+| Mode | Block emitted | Instance selection | Requires on the launch template |
+| --- | --- | --- | --- |
+| Mixed (default) | `mixed_instances_policy` | `instance_types` / `instance_type_weights`, or `instance_requirements` | `instance_type` left unset |
+| Simple | `launch_template` | The template's own `instance_type` | `instance_type` set |
+
+---
+
+# Instance Selection (mixed mode)
+
+```hcl
+# By instance type, with optional weighting:
+instance_types         = ["t3.small", "t3.medium", "t3a.small"]
+instance_type_weights  = { "t3.medium" = 2 }
+
+# Or, instead, by attribute (mutually exclusive with the above):
+instance_requirements = {
+  vcpu_count = { min = 2, max = 4 }
+  memory_mib = { min = 4096 }
+}
+```
+
+`on_demand_base_capacity`, `on_demand_percentage_above_base_capacity`, `spot_allocation_strategy`, `spot_instance_pools`, and `spot_max_price` control the On-Demand/Spot mix. `spot_instance_pools` is only usable when `spot_allocation_strategy = "lowest-price"`, matching AWS's own constraint (enforced here as a precondition).
+
+---
+
+# Termination and Maintenance
+
+```hcl
+termination_policies = ["OldestLaunchTemplate", "Default"]
+suspended_processes  = []
+
+max_instance_lifetime  = 0      # disabled by default; set 86400-31536000 to force periodic replacement
+protect_from_scale_in  = false
+```
+
+---
+
+# Warm Pool
+
+```hcl
+warm_pool = {
+  pool_state         = "Stopped"
+  min_size            = 2
+  reuse_on_scale_in   = true
+}
+```
+
+Keeps pre-initialized instances ready outside the group's active capacity, reducing scale-out latency.
+
+---
+
+# Lifecycle Hooks
+
+```hcl
+initial_lifecycle_hooks = [
+  {
+    name                  = "drain-connections"
+    lifecycle_transition  = "autoscaling:EC2_INSTANCE_TERMINATING"
+    heartbeat_timeout      = 120
+  }
 ]
 ```
 
-For a standalone worker fleet:
+For hooks added after the group already exists, use a standalone `aws_autoscaling_lifecycle_hook` resource instead -- `initial_lifecycle_hooks` only applies at group creation.
+
+---
+
+# Instance Refresh
 
 ```hcl
-target_group_arns = []
+instance_refresh_min_healthy_percentage = 50   # default
+instance_refresh_max_healthy_percentage = 100  # default
+instance_refresh_warmup                 = 300  # default
+instance_refresh_auto_rollback          = true # default
 ```
 
-## IAM Permissions
+Also exposed: `instance_refresh_checkpoint_delay`, `instance_refresh_checkpoint_percentages` (validated ascending, must end in 100), `instance_refresh_skip_matching`, `instance_refresh_scale_in_protected_instances`, `instance_refresh_standby_instances`, `instance_refresh_alarm_arns`, and `instance_refresh_triggers` for additional trigger properties beyond the always-included `launch_template`.
 
-Systems Manager access can be enabled with:
+---
+
+# Capacity Reservations
 
 ```hcl
-enable_ssm_access = true
+capacity_reservation_preference = "capacity-reservations-first"
+capacity_reservation_ids        = ["cr-0123456789abcdef0"]
 ```
 
-ECR read access can be enabled with:
+`capacity_reservation_ids` and `capacity_reservation_resource_group_arns` are mutually exclusive; either requires `capacity_reservation_preference` to be set (both enforced as preconditions).
 
-```hcl
-enable_ecr_read_access = true
-```
+---
 
-Additional policies can be supplied when required:
+# Security Considerations
 
-```hcl
-additional_policy_arns = [
-  "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
-]
-```
+* Compute source and IAM identity are always caller-supplied (`launch_template_id`, and transitively the launch template's own `iam_instance_profile_name`) rather than created here.
+* `protect_from_scale_in` and `warm_pool` are both opt-in, so a caller doesn't inherit either behavior by surprise.
 
-Only permissions required by the workload should be enabled.
+---
 
-## Security
+# Inputs
 
-The module:
+See `variables.tf` -- every variable carries a `description` and, where relevant, `validation` blocks enforcing the same constraints AWS itself enforces.
 
-* uses private instances by default
-* disables public IP assignment by default
-* requires IMDSv2
-* encrypts the root EBS volume
-* uses an EC2 IAM role instead of static AWS credentials
-* supports Systems Manager to avoid requiring SSH access
+# Outputs
 
-## Capacity
+| Name        | Description                       |
+| ------------ | ------------------------------------ |
+| `asg_name`  | Name of the Auto Scaling Group.    |
+| `asg_arn`   | ARN of the Auto Scaling Group.     |
 
-The following relationship must always be satisfied:
+---
+
+# Module Structure
 
 ```text
-min_size <= desired_size <= max_size
+terraform-aws-autoscaling/
+│
+├── main.tf
+├── variables.tf
+├── locals.tf
+├── outputs.tf
+├── versions.tf
+├── README.md
+│
+└── examples/
+    └── complete/
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
 ```
 
-The module enforces this relationship through an Auto Scaling Group
-precondition.
+---
 
-## Requirements
+# Versioning
 
-* Terraform >= 1.6.0
-* AWS provider >= 6.0 and < 7.0
-* An AWS VPC
-* At least one subnet
-* An EC2-compatible security group
+This module follows Semantic Versioning.
 
-## Inputs
-
-| Name                        | Type         | Default     | Description                          |
-| --------------------------- | ------------ | ----------- | ------------------------------------ |
-| project_name                | string       | n/a         | Project name                         |
-| environment                 | string       | n/a         | Deployment environment               |
-| service_name                | string       | n/a         | Service or worker fleet name         |
-| app_security_group_id       | string       | n/a         | EC2 security group ID                |
-| subnet_ids                  | list(string) | n/a         | Subnets used by the ASG              |
-| target_group_arns           | list(string) | `[]`        | Optional load balancer target groups |
-| instance_type               | string       | `t3.micro`  | EC2 instance type                    |
-| min_size                    | number       | `1`         | Minimum ASG capacity                 |
-| desired_size                | number       | `1`         | Desired ASG capacity                 |
-| max_size                    | number       | `3`         | Maximum ASG capacity                 |
-| user_data                   | string       | `null`      | Optional EC2 user-data               |
-| associate_public_ip_address | bool         | `false`     | Public IP assignment                 |
-| health_check_type           | string       | `EC2`       | ASG health check type                |
-| health_check_grace_period   | number       | `300`       | Health check grace period            |
-| enable_detailed_monitoring  | bool         | `false`     | Enable detailed monitoring           |
-| root_device_name            | string       | `/dev/sda1` | Ubuntu root device                   |
-| root_volume_size            | number       | `20`        | Root EBS size in GiB                 |
-| root_volume_type            | string       | `gp3`       | Root EBS volume type                 |
-| enable_ssm_access           | bool         | `true`      | Enable SSM                           |
-| enable_ecr_read_access      | bool         | `false`     | Enable ECR read access               |
-| additional_policy_arns      | list(string) | `[]`        | Additional IAM policies              |
-
-## Outputs
-
-* `autoscaling_group_id`
-* `autoscaling_group_name`
-* `autoscaling_group_arn`
-* `launch_template_id`
-* `launch_template_name`
-* `launch_template_latest_version`
-* `instance_role_name`
-* `instance_role_arn`
-* `instance_profile_name`
-* `ami_id`
-* `ami_name`
-
-## Example
-
-A complete example is available under:
+Current release:
 
 ```text
-examples/complete/
+v2.0.0
 ```
 
-## License
+`v2.0.0` is a **major** release relative to the previous `terraform-aws-autoscaling` (`v1.x`):
 
-This project is licensed under the MIT License.
+* **Breaking:** the module no longer creates a launch template, IAM role, instance profile, or AMI lookup. `launch_template_id` / `launch_template_version` are now required inputs, sourced from the companion `terraform-aws-launch-template` module (and, transitively, a profile module and an AMI-producing module).
+* **Breaking:** `desired_size` renamed to `desired_capacity`, matching AWS's own argument name.
+* **Breaking:** `asg_type` replaced by `service_name`, consistent with the naming convention used across the companion `profile` and `launch-template` modules.
+* **New:** `mixed_instances_enabled` toggle absorbing what was previously a separate `terraform-aws-autoscaling-mixed` module -- termination policies, suspended processes, warm pools, lifecycle hooks, capacity reservations, Availability Zone distribution, and a fully expanded instance refresh configuration are now available regardless of launch mode.
+
+`terraform-aws-autoscaling-mixed` is retired as a separate repository; its functionality now lives here behind `mixed_instances_enabled = true` (the default).
+
+---
+
+# License
+
+This module is provided for reusable AWS infrastructure deployments and is intended to be consumed as a versioned Terraform module.

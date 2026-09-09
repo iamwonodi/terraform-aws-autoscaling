@@ -1,37 +1,34 @@
-
-################################################################################
-# UBUNTU AMI CONFIGURATION
-#
-# The module uses the latest Ubuntu 24.04 LTS x86_64 AMI published by Canonical.
-#
-# AMI IDs are resolved dynamically so the module remains portable across AWS
-# regions without requiring consumers to maintain region-specific AMI IDs.
-################################################################################
-
 locals {
-  ami_owner = "099720109477"
-
-  ami_name = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
-
-  ################################################################################
-  # COMMON RESOURCE TAGS
-  ################################################################################
-
-  common_tags = {
-    Project     = var.project_name
-    Environment = var.environment
-    Service     = var.service_name
-    ManagedBy   = "Terraform"
-  }
-
-  ################################################################################
-  # AUTO SCALING GROUP TAGS
-  ################################################################################
-
-  asg_tags = merge(
-    local.common_tags,
+  common_tags = merge(
+    var.tags,
     {
-      Name = "${var.project_name}-${var.environment}-${var.service_name}-worker"
+      Name        = "${var.project_name}-${var.environment}-${var.service_name}-worker"
+      Environment = var.environment
+      Service     = var.service_name
     }
   )
+
+  # mixed_instances_policy accepts either a list of simple instance_type
+  # overrides, or a single attribute-based instance_requirements override --
+  # not both at once. instance_requirements, when set, replaces the whole
+  # instance_types-derived override list with one attribute-based override.
+  # Both are irrelevant when mixed_instances_enabled is false.
+  use_instance_requirements = var.mixed_instances_enabled && var.instance_requirements != null
+
+  simple_overrides = (var.mixed_instances_enabled && !local.use_instance_requirements) ? [
+    for instance_type in var.instance_types : {
+      instance_type     = instance_type
+      weighted_capacity = try(tostring(var.instance_type_weights[instance_type]), null)
+    }
+  ] : []
+
+  # capacity_reservation_specification's capacity_reservation_preference is
+  # itself a Required field within the block, so the whole block is only
+  # emitted when the caller has actually set a preference.
+  capacity_reservation_specification_enabled = var.capacity_reservation_preference != null
+
+  # instance_refresh always refreshes on launch_template/mixed_instances_policy
+  # changes; additional trigger properties are appended and de-duplicated in
+  # case the caller also lists "launch_template" explicitly.
+  instance_refresh_triggers = distinct(concat(["launch_template"], var.instance_refresh_triggers))
 }
