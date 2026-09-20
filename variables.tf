@@ -359,9 +359,19 @@ variable "spot_max_price" {
 ################################################################################
 
 variable "health_check_type" {
-  type        = string
-  description = "Health check type used by the Auto Scaling Group."
-  default     = "ELB"
+  type = string
+
+  description = <<-DESCRIPTION
+    How the group decides an instance is unhealthy.
+
+    "EC2" watches the instance itself. "ELB" also replaces an instance that a
+    target group reports unhealthy, which is what a group running ONE service
+    wants -- and the wrong thing for a group running several, where one service
+    failing its health check would make the group replace a host that every other
+    service on it is also running.
+  DESCRIPTION
+
+  default = "EC2"
 
   validation {
     condition     = contains(["EC2", "ELB"], var.health_check_type)
@@ -412,10 +422,34 @@ variable "default_instance_warmup" {
 # TARGET GROUPS AND TRAFFIC SOURCES
 ################################################################################
 
+variable "manage_traffic_sources" {
+  type        = bool
+  default     = false
+  description = <<-DESCRIPTION
+    Whether THIS module owns the group's target groups.
+
+    An Auto Scaling Group's target groups are an attribute of the group, so an
+    attachment made anywhere else -- aws_autoscaling_attachment,
+    aws_autoscaling_traffic_source_attachment, another configuration, the console --
+    reads as drift here and the next apply removes it. Where several services each
+    attach their own target group to one shared group, that quietly takes every
+    service out of its load balancer.
+
+    false (the default) leaves the attribute alone after the group is created, so
+    attachments made elsewhere survive. Attach with
+    aws_autoscaling_traffic_source_attachment in the configuration that owns the
+    target group.
+
+    true lets this module set target_group_arns and traffic_sources, and it will
+    then revert anything attached elsewhere. Only sensible when this configuration
+    is the single owner of the group's traffic sources.
+  DESCRIPTION
+}
+
 variable "target_group_arns" {
   type        = list(string)
-  description = "Optional Application/Network Load Balancer target group ARNs associated with the Auto Scaling Group."
   default     = []
+  description = "Target group ARNs to attach. Requires manage_traffic_sources = true; with it false, attach from the configuration that owns the target group instead."
 }
 
 variable "traffic_sources" {
@@ -423,23 +457,9 @@ variable "traffic_sources" {
     identifier = string
     type       = string
   }))
-
-  description = "Optional additional traffic sources (e.g. VPC Lattice target groups) beyond target_group_arns."
   default     = []
-
-  validation {
-    condition = alltrue([
-      for source in var.traffic_sources :
-      contains(["elb", "elbv2", "vpc-lattice"], source.type)
-    ])
-
-    error_message = "Each traffic source type must be elb, elbv2, or vpc-lattice."
-  }
+  description = "Traffic sources (VPC Lattice, and target groups by ARN) to attach. Requires manage_traffic_sources = true."
 }
-
-################################################################################
-# AVAILABILITY ZONE AND CAPACITY RESERVATION STRATEGY
-################################################################################
 
 variable "availability_zone_distribution_strategy" {
   type        = string

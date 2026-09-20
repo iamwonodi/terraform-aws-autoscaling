@@ -46,10 +46,16 @@ module "autoscaling" {
   spot_allocation_strategy                 = "price-capacity-optimized"
   capacity_rebalance                       = true
 
+  # One service on this group, so the load balancer's view of health is the one
+  # that matters. A shared group should leave this at its EC2 default.
   health_check_type         = "ELB"
   health_check_grace_period = 300
 
-  target_group_arns = [var.target_group_arn]
+  # This example owns its target group, so the module may set it. On a group
+  # several services attach to, leave manage_traffic_sources false and attach
+  # with aws_autoscaling_traffic_source_attachment instead.
+  manage_traffic_sources = true
+  target_group_arns      = [var.target_group_arn]
 
   termination_policies = ["OldestLaunchTemplate", "Default"]
 

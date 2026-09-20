@@ -32,7 +32,48 @@ launch_template_id / launch_template_version
 
 * One module, one toggle (`mixed_instances_enabled`), instead of two modules maintaining the same ~90% of shared Auto Scaling Group configuration in parallel.
 * The launch template is always caller-supplied (`launch_template_id` / `launch_template_version`), never created here -- see the companion `terraform-aws-launch-template` module.
-* Deliberately excluded: `load_balancers` (classic ELB, legacy -- `target_group_arns` and `traffic_source` cover current load balancer types) and `launch_configuration` (deprecated by AWS in favor of launch templates).
+* Deliberately excluded: `load_balancers` (classic ELB, legacy) and `launch_configuration` (deprecated by AWS in favor of launch templates).
+
+## Who owns the target groups
+
+An Auto Scaling Group's target groups are an **attribute of the group**, not a relationship recorded on the target group. So an attachment made anywhere other than the `aws_autoscaling_group` resource -- `aws_autoscaling_attachment`, `aws_autoscaling_traffic_source_attachment`, another configuration, the console -- reads as drift here, and the next apply removes it.
+
+Where several services share one group and each attaches its own target group, that silently takes **every** service out of its load balancer.
+
+`manage_traffic_sources` decides who owns them:
+
+| | `false` (default) | `true` |
+| --- | --- | --- |
+| This module sets `target_group_arns` | no | yes, **at creation only** |
+| Attachments made elsewhere | survive | are reverted on the next apply |
+| Use it for | a shared group, or any group attached to from outside | a group this configuration alone owns |
+
+`target_group_arns` and `load_balancers` are always in `ignore_changes`, because `ignore_changes` cannot be conditional. With `manage_traffic_sources = true` the values are therefore applied when the group is created and ignored afterwards; change them with an attachment resource.
+
+```hcl
+# The group, which does not own its traffic sources.
+module "fleet" {
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v3.0.0"
+  # manage_traffic_sources defaults to false
+  ...
+}
+
+# Attached from wherever the target group is created.
+resource "aws_autoscaling_traffic_source_attachment" "this" {
+  autoscaling_group_name = module.fleet.name
+
+  traffic_source {
+    identifier = aws_lb_target_group.service.arn
+    type       = "elbv2"
+  }
+}
+```
+
+## Health checks on a shared group
+
+`health_check_type` defaults to **`EC2`**, which watches the instance itself.
+
+`ELB` also replaces an instance that a target group reports unhealthy. That is right for a group running one service, and wrong for a group running several: one service failing its health check would make the group replace a host that every other service on it is also running.
 
 ---
 
@@ -268,3 +309,7 @@ v2.0.0
 # License
 
 This module is provided for reusable AWS infrastructure deployments and is intended to be consumed as a versioned Terraform module.
+
+## Versioning
+
+Current release: `v3.0.0`. See the repository's tags for earlier releases.

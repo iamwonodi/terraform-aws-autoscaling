@@ -19,10 +19,12 @@ resource "aws_autoscaling_group" "this" {
   max_instance_lifetime = var.max_instance_lifetime > 0 ? var.max_instance_lifetime : null
   protect_from_scale_in = var.protect_from_scale_in
 
-  target_group_arns = var.target_group_arns
+  # Set only when this module owns the group's traffic sources; otherwise left
+  # alone, so attachments made elsewhere are not reverted (see the lifecycle block).
+  target_group_arns = var.manage_traffic_sources ? var.target_group_arns : null
 
   dynamic "traffic_source" {
-    for_each = var.traffic_sources
+    for_each = var.manage_traffic_sources ? var.traffic_sources : []
 
     content {
       identifier = traffic_source.value.identifier
@@ -238,6 +240,26 @@ resource "aws_autoscaling_group" "this" {
 
   lifecycle {
     create_before_destroy = true
+
+    # Target groups are an attribute of the group, so an attachment made anywhere
+    # else reads as drift and the next apply would remove it. On a shared group
+    # that takes every service out of its load balancer at once.
+    #
+    # ignore_changes cannot be conditional, so it is unconditional and
+    # manage_traffic_sources decides whether the attribute is set at all. The
+    # consequence is stated plainly: with manage_traffic_sources = true,
+    # target_group_arns is applied when the group is CREATED and changes to it
+    # afterwards are ignored; change them with attachment resources instead.
+    #
+    # Only the two ATTRIBUTES are listed. A traffic_source BLOCK attached
+    # elsewhere (VPC Lattice) is not protected by this; attach those from the
+    # configuration that owns the group.
+    ignore_changes = [target_group_arns, load_balancers]
+
+    precondition {
+      condition     = var.manage_traffic_sources || (length(var.target_group_arns) == 0 && length(var.traffic_sources) == 0)
+      error_message = "target_group_arns and traffic_sources are set, but manage_traffic_sources is false, so they would be ignored. Set manage_traffic_sources = true, or attach them from the configuration that owns the target group."
+    }
 
     precondition {
       condition = (
