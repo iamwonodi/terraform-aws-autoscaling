@@ -53,7 +53,7 @@ Where several services share one group and each attaches its own target group, t
 ```hcl
 # The group, which does not own its traffic sources.
 module "fleet" {
-  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v3.0.0"
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v3.0.1"
   # manage_traffic_sources defaults to false
   ...
 }
@@ -107,7 +107,7 @@ module "launch_template" {
 }
 
 module "autoscaling" {
-  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v2.0.0"
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v3.0.1"
 
   project_name = "myapp"
   environment  = "production"
@@ -135,7 +135,7 @@ module "launch_template" {
 }
 
 module "autoscaling" {
-  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v2.0.0"
+  source = "git::https://github.com/iamwonodi/terraform-aws-autoscaling.git?ref=v3.0.1"
 
   # ...
   mixed_instances_enabled = false
@@ -229,7 +229,7 @@ instance_refresh_warmup                 = 300  # default
 instance_refresh_auto_rollback          = true # default
 ```
 
-Also exposed: `instance_refresh_checkpoint_delay`, `instance_refresh_checkpoint_percentages` (validated ascending, must end in 100), `instance_refresh_skip_matching`, `instance_refresh_scale_in_protected_instances`, `instance_refresh_standby_instances`, `instance_refresh_alarm_arns`, and `instance_refresh_triggers` for additional trigger properties beyond the always-included `launch_template`.
+Also exposed: `instance_refresh_checkpoint_delay`, `instance_refresh_checkpoint_percentages` (validated ascending, must end in 100), `instance_refresh_skip_matching`, `instance_refresh_scale_in_protected_instances`, `instance_refresh_standby_instances`, `instance_refresh_alarm_arns`, and `instance_refresh_triggers` for additional trigger properties. A change to the launch template (or `mixed_instances_policy`) always starts a refresh, so those two are never sent as triggers, even if listed.
 
 ---
 
@@ -292,10 +292,12 @@ This module follows Semantic Versioning.
 Current release:
 
 ```text
-v2.0.0
+v3.0.1
 ```
 
-`v2.0.0` is a **major** release relative to the previous `terraform-aws-autoscaling` (`v1.x`):
+`v3.0.1` is a **patch** release: `launch_template` and `mixed_instances_policy` are no longer sent as instance refresh triggers. A change to either always starts a refresh, so listing them only produced the provider's warning (*'launch_template' always triggers an instance refresh and can be removed*). Behaviour is unchanged; a group that sent them before sees its triggers updated in place, with no refresh.
+
+`v2.0.0` was a **major** release relative to the previous `terraform-aws-autoscaling` (`v1.x`):
 
 * **Breaking:** the module no longer creates a launch template, IAM role, instance profile, or AMI lookup. `launch_template_id` / `launch_template_version` are now required inputs, sourced from the companion `terraform-aws-launch-template` module (and, transitively, a profile module and an AMI-producing module).
 * **Breaking:** `desired_size` renamed to `desired_capacity`, matching AWS's own argument name.
@@ -310,6 +312,14 @@ v2.0.0
 
 This module is provided for reusable AWS infrastructure deployments and is intended to be consumed as a versioned Terraform module.
 
+## Tests
+
+```bash
+terraform init -backend=false && terraform test
+```
+
+The instance refresh triggers, with AWS mocked.
+
 ## Versioning
 
-Current release: `v3.0.0`. See the repository's tags for earlier releases.
+Current release: `v3.0.1`. See the repository's tags for earlier releases.

@@ -27,8 +27,15 @@ locals {
   # emitted when the caller has actually set a preference.
   capacity_reservation_specification_enabled = var.capacity_reservation_preference != null
 
-  # instance_refresh always refreshes on launch_template/mixed_instances_policy
-  # changes; additional trigger properties are appended and de-duplicated in
-  # case the caller also lists "launch_template" explicitly.
-  instance_refresh_triggers = distinct(concat(["launch_template"], var.instance_refresh_triggers))
+  # A change to launch_template or mixed_instances_policy always starts an
+  # instance refresh, and the provider warns when either is listed as a trigger
+  # ("'launch_template' always triggers an instance refresh and can be
+  # removed"). Only the caller's other properties are sent, de-duplicated; with
+  # none, no triggers at all.
+  always_refresh_on = ["launch_template", "mixed_instances_policy"]
+  instance_refresh_extra_triggers = distinct([
+    for trigger in var.instance_refresh_triggers : trigger
+    if !contains(local.always_refresh_on, trigger)
+  ])
+  instance_refresh_triggers = length(local.instance_refresh_extra_triggers) > 0 ? local.instance_refresh_extra_triggers : null
 }

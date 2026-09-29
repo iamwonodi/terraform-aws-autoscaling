@@ -755,7 +755,7 @@ variable "instance_refresh_alarm_arns" {
 
 variable "instance_refresh_triggers" {
   type        = list(string)
-  description = "Additional ASG property names that trigger an instance refresh, beyond launch_template/mixed_instances_policy changes which always trigger one."
+  description = "Additional ASG property names that trigger an instance refresh. Changes to launch_template and mixed_instances_policy always trigger one, so those two are ignored if listed."
   default     = []
 }
 
